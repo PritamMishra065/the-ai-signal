@@ -1,6 +1,9 @@
 import { PrismaClient, Ownership, Stream, DegreeLevel, Category, Quota, ReviewStatus } from '@prisma/client';
+import { loadEnvFile } from 'node:process';
 import { normalizeName } from '../src/lib/normalize';
 import { buildSearchText, recomputeCollegeAggregates } from '../src/modules/colleges/aggregates';
+
+try { loadEnvFile('.env'); } catch { /* deployment environments provide variables directly */ }
 
 const prisma = new PrismaClient();
 
