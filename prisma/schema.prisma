@@ -1,0 +1,213 @@
+// College Discovery Platform — data model
+//
+// Design notes (see README "Schema decisions"):
+//  * Money is stored as INR *integers* (paise-free rupees). Never floats — no rounding drift.
+//  * College carries a small set of DENORMALISED aggregates (ratingAvg, fee band,
+//    latest placement figures). They are recomputed inside the same transaction as the
+//    write that invalidates them. This keeps the list/search endpoint a single indexed
+//    scan instead of N sub-aggregations per page.
+//  * `searchText` is an app-maintained denormalised search column. A GIN index over
+//    to_tsvector(searchText) + a pg_trgm index are created in the init migration.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum Ownership {
+  GOVERNMENT
+  PRIVATE
+  DEEMED
+  AUTONOMOUS
+}
+
+enum Stream {
+  ENGINEERING
+  MEDICAL
+  MANAGEMENT
+  LAW
+  DESIGN
+  SCIENCE
+  COMMERCE
+  ARTS
+}
+
+enum DegreeLevel {
+  DIPLOMA
+  UNDERGRADUATE
+  POSTGRADUATE
+  DOCTORATE
+}
+
+enum ReviewStatus {
+  PENDING
+  PUBLISHED
+  REJECTED
+}
+
+enum Category {
+  GENERAL
+  EWS
+  OBC_NCL
+  SC
+  ST
+}
+
+enum Quota {
+  ALL_INDIA
+  HOME_STATE
+  OTHER_STATE
+}
+
+model College {
+  id     String @id @default(cuid())
+  slug   String @unique
+  name   String
+  /// lower-cased, punctuation-stripped name — the dedupe key for ingestion
+  normalizedName String @unique
+  shortName      String?
+
+  city            String
+  state           String
+  ownership       Ownership
+  establishedYear Int
+  description     String    @db.Text
+  website         String?
+  naacGrade       String?
+  nirfRank        Int?
+  campusAreaAcres Int?
+  approvedBy      String[]  @default([])
+
+  // ---- denormalised aggregates (never written by hand; see aggregates.ts) ----
+  ratingAvg              Decimal  @default(0) @db.Decimal(3, 2)
+  ratingCount            Int      @default(0)
+  courseCount            Int      @default(0)
+  minAnnualFeeInr        Int?
+  maxAnnualFeeInr        Int?
+  latestMedianPackageInr Int?
+  latestPlacementRate    Decimal? @db.Decimal(5, 2)
+  /// denormalised haystack: name + shortName + city + state + streams
+  searchText             String   @default("")
+
+  courses    Course[]
+  placements PlacementStat[]
+  reviews    Review[]
+  cutoffs    Cutoff[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([state])
+  @@index([city])
+  @@index([ownership])
+  @@index([nirfRank])
+  @@index([ratingAvg(sort: Desc)])
+  @@index([minAnnualFeeInr])
+  @@index([latestMedianPackageInr(sort: Desc)])
+  @@index([state, ownership])
+}
+
+model Course {
+  id        String  @id @default(cuid())
+  collegeId String
+  college   College @relation(fields: [collegeId], references: [id], onDelete: Cascade)
+
+  name           String
+  slug           String
+  degreeLevel    DegreeLevel
+  stream         Stream
+  durationMonths Int
+  annualFeeInr   Int
+  totalSeats     Int
+  cutoffs        Cutoff[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([collegeId, slug])
+  @@index([stream])
+  @@index([annualFeeInr])
+  @@index([collegeId, stream])
+}
+
+model PlacementStat {
+  id        String  @id @default(cuid())
+  collegeId String
+  college   College @relation(fields: [collegeId], references: [id], onDelete: Cascade)
+
+  year               Int
+  medianPackageInr   Int
+  averagePackageInr  Int
+  highestPackageInr  Int
+  placementRatePct   Decimal  @db.Decimal(5, 2)
+  studentsPlaced     Int
+  topRecruiters      String[] @default([])
+
+  createdAt DateTime @default(now())
+
+  @@unique([collegeId, year])
+  @@index([year])
+}
+
+model Review {
+  id        String  @id @default(cuid())
+  collegeId String
+  college   College @relation(fields: [collegeId], references: [id], onDelete: Cascade)
+
+  authorName String
+  /// sha256(email) — we never store the raw address, but can still block duplicates
+  authorKey  String
+
+  overallRating        Int
+  academicsRating      Int
+  infrastructureRating Int
+  placementsRating     Int
+  facultyRating        Int
+
+  title          String
+  body           String       @db.Text
+  graduationYear Int
+  status         ReviewStatus @default(PUBLISHED)
+
+  createdAt DateTime @default(now())
+
+  @@unique([collegeId, authorKey])
+  @@index([collegeId, status, createdAt(sort: Desc)])
+}
+
+model Exam {
+  id     String  @id @default(cuid())
+  code   String  @unique
+  name   String
+  stream Stream
+  /// biggest rank ever issued — used to sanity-check predictor input
+  maxRank Int
+
+  cutoffs Cutoff[]
+}
+
+model Cutoff {
+  id        String  @id @default(cuid())
+  collegeId String
+  college   College @relation(fields: [collegeId], references: [id], onDelete: Cascade)
+  courseId  String
+  course    Course  @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  examId    String
+  exam      Exam    @relation(fields: [examId], references: [id], onDelete: Cascade)
+
+  year        Int
+  round       Int
+  category    Category
+  quota       Quota
+  openingRank Int
+  closingRank Int
+
+  @@unique([courseId, examId, year, round, category, quota])
+  @@index([examId, year, category, quota, closingRank])
+  @@index([collegeId])
+}
