@@ -34,12 +34,12 @@ export function route<T, P = Record<string, never>>(
   handler: Handler<T, P>,
   options: RouteOptions = {},
 ) {
-  return async (req: NextRequest, ctx?: { params?: Promise<P> }) => {
+  return async (req: NextRequest, ctx: { params: Promise<P> }) => {
     const requestId = req.headers.get('x-request-id') ?? crypto.randomUUID();
     const startedAt = performance.now();
 
     try {
-      const params = ((await ctx?.params) ?? {}) as P;
+      const params = (await ctx.params) as P;
       const result = await handler(req, {
         params,
         requestId,
